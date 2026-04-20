@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, Float, ForeignKey
 from sqlalchemy.orm import relationship
 from app.db.database import Base
 
@@ -10,6 +10,8 @@ class Tecnico(Base):
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), unique=True, nullable=False)
     taller_id = Column(Integer, ForeignKey("talleres.id"), nullable=True)
     disponible = Column(Boolean, default=True)
+    ubicacion_lat = Column(Float, nullable=True)
+    ubicacion_lng = Column(Float, nullable=True)
 
     usuario = relationship("Usuario", backref="tecnico")
     taller = relationship("Taller", back_populates="tecnicos")

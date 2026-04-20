@@ -14,3 +14,4 @@ class Vehiculo(Base):
     color = Column(String)
 
     cliente = relationship("Usuario", back_populates="vehiculos")
+    incidentes = relationship("Incidente", back_populates="vehiculo")

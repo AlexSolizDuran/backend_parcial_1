@@ -11,7 +11,7 @@ from app.modulos.usuarios.models.usuario import Usuario
 router = APIRouter(prefix="/vehiculo")
 
 
-@router.post("/", response_model=VehiculoResponse)
+@router.post("", response_model=VehiculoResponse)
 def crear_vehiculo(
     vehiculo: VehiculoCreate,
     current_user: Usuario = Depends(get_current_user),

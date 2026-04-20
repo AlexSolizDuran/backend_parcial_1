@@ -24,3 +24,6 @@ class Usuario(Base):
 
     vehiculos = relationship("Vehiculo", back_populates="cliente")
     notificaciones = relationship("Notificacion", back_populates="usuario")
+    
+    # AGREGA ESTA LÍNEA:
+    incidentes = relationship("Incidente", back_populates="cliente")
