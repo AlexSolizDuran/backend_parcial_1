@@ -16,7 +16,18 @@ class HistorialTallerCreate(HistorialTallerBase):
 class HistorialTallerResponse(HistorialTallerBase):
     id: int
     taller_id: int
-    fecha: datetime
+    fecha: str
+
+    @classmethod
+    def from_orm(cls, obj):
+        return cls(
+            id=obj.id,
+            taller_id=obj.taller_id,
+            titulo=obj.titulo,
+            descripcion=obj.descripcion,
+            tipo=obj.tipo,
+            fecha=obj.fecha.isoformat() if obj.fecha else None
+        )
 
     class Config:
         from_attributes = True

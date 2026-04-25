@@ -4,7 +4,6 @@ from datetime import datetime
 
 
 class HistoriaIncidenteBase(BaseModel):
-    estado: str
     titulo: str
     descripcion: Optional[str] = None
 

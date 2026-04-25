@@ -15,15 +15,7 @@ def crear_notificacion(notificacion: NotificacionCreate, db: Session = Depends(g
     return notificacion_service.crear_notificacion(db, notificacion)
 
 
-@router.get("/{notificacion_id}", response_model=NotificacionResponse)
-def get_notificacion(notificacion_id: int, db: Session = Depends(get_db)):
-    db_notificacion = notificacion_service.obtener_notificacion(db, notificacion_id)
-    if not db_notificacion:
-        raise HTTPException(status_code=404, detail="Notificacion no encontrada")
-    return db_notificacion
-
-
-@router.get("/mis-notificaciones/", response_model=list[NotificacionResponse])
+@router.get("/mis-notificaciones", response_model=list[NotificacionResponse])
 def get_mis_notificaciones(
     skip: int = 0,
     limit: int = 100,
@@ -31,6 +23,14 @@ def get_mis_notificaciones(
     db: Session = Depends(get_db)
 ):
     return notificacion_service.obtener_notificaciones_usuario(db, current_user.id, skip, limit)
+
+
+@router.get("/{notificacion_id}", response_model=NotificacionResponse)
+def get_notificacion(notificacion_id: int, db: Session = Depends(get_db)):
+    db_notificacion = notificacion_service.obtener_notificacion(db, notificacion_id)
+    if not db_notificacion:
+        raise HTTPException(status_code=404, detail="Notificacion no encontrada")
+    return db_notificacion
 
 
 @router.put("/{notificacion_id}/leer", response_model=NotificacionResponse)

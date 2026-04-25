@@ -1,10 +1,15 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from app.modulos.incidentes.models.historial import HistoriaIncidente
 from app.modulos.incidentes.models.incidente import Incidente, EstadoIncidente
 from app.modulos.incidentes.schemas.historia_incidente import HistoriaIncidenteCreate
+
+BOLIVIA_TZ = timezone(timedelta(hours=-4))
+
+def now_bolivia():
+    return datetime.now(BOLIVIA_TZ)
 
 
 MAP_ESTADO_INCIDENTE_A_HISTORIA = {
@@ -14,6 +19,7 @@ MAP_ESTADO_INCIDENTE_A_HISTORIA = {
     EstadoIncidente.en_sitio: "en_atencion",
     EstadoIncidente.finalizado: "completado",
     EstadoIncidente.cancelado: "cancelado",
+    EstadoIncidente.incluido: "inconcluso",
 }
 
 
@@ -32,7 +38,6 @@ def crear_incidente(db: Session, incidente) -> Incidente:
     
     db_historia = HistoriaIncidente(
         incidente_id=db_incidente.id,
-        estado="recibido",
         titulo="Emergencia recibida",
         descripcion=f"Incidente reportado en coordinates ({db_incidente.ubicacion_lat}, {db_incidente.ubicacion_lng})"
     )
@@ -46,7 +51,6 @@ def crear_historia_incidente(db: Session, incidente_id: int, historia: HistoriaI
     """Create a new history entry for an incident"""
     db_historia = HistoriaIncidente(
         incidente_id=incidente_id,
-        estado=historia.estado,
         titulo=historia.titulo,
         descripcion=historia.descripcion
     )
@@ -71,7 +75,7 @@ def cambiar_estado_incidente(db: Session, incidente_id: int, nuevo_estado: Estad
     
     estado_anterior = db_incidente.estado
     db_incidente.estado = nuevo_estado
-    db_incidente.fecha_actualizacion = datetime.utcnow()
+    db_incidente.fecha_actualizacion = now_bolivia()
     
     estado_historia = MAP_ESTADO_INCIDENTE_A_HISTORIA.get(nuevo_estado, "en_atencion")
     titulo = f"Estado cambiado a {nuevo_estado.value}"
@@ -79,7 +83,6 @@ def cambiar_estado_incidente(db: Session, incidente_id: int, nuevo_estado: Estad
     
     db_historia = HistoriaIncidente(
         incidente_id=incidente_id,
-        estado=estado_historia,
         titulo=titulo,
         descripcion=descripcion
     )

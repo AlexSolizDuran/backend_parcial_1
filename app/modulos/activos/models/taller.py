@@ -17,6 +17,5 @@ class Taller(Base):
 
     dueño = relationship("Usuario", backref="taller")
     tecnicos = relationship("Tecnico", back_populates="taller")
-    asignaciones = relationship("Asignacion", back_populates="taller")
     historial = relationship("HistorialTaller", back_populates="taller", cascade="all, delete-orphan")
     especialidades = relationship("Especialidad", secondary=taller_especialidades, back_populates="talleres")

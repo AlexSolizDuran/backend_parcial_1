@@ -4,6 +4,8 @@ from typing import Optional
 
 class TecnicoBase(BaseModel):
     taller_id: Optional[int] = None
+    ubicacion_lat: Optional[float] = None
+    ubicacion_lng: Optional[float] = None
 
 
 class TecnicoCreate(TecnicoBase):

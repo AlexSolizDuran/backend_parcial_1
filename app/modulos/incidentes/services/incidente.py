@@ -1,72 +1,48 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime, timezone, timedelta
 from app.modulos.incidentes.models.incidente import Incidente, EstadoIncidente, PrioridadIncidente
 from app.modulos.incidentes.models.evidencia import Evidencia
 from app.modulos.incidentes.models.historial import HistoriaIncidente
-from app.modulos.incidentes.models.asignacion import Asignacion, EstadoAsignacion
-from app.modulos.incidentes.schemas.incidente import IncidenteCreate, IncidenteUpdate, EvidenciaCreate, HistoriaIncidenteCreate
-from app.modulos.usuarios.models.usuario import Usuario
+from app.modulos.asignacion.model import Asignacion
+from app.modulos.asignacion import service as asignacion_service
+from app.modulos.incidentes.schemas.incidente import IncidenteCreate, IncidenteUpdate
+from app.modulos.incidentes.services.historia_incidente import (
+    crear_historia_incidente,
+    obtener_historia_incidente as obtener_historia,
+    cambiar_estado_incidente as cambiar_estado_historia
+)
 from app.modulos.activos.models.taller import Taller
-from app.modulos.activos.models.vehiculo import Vehiculo
-from datetime import datetime
+
+BOLIVIA_TZ = timezone(timedelta(hours=-4))
+
+def now_bolivia():
+    return datetime.now(BOLIVIA_TZ)
 import math
 
 
-MAP_ESTADO_INCIDENTE_A_HISTORIA = {
-    EstadoIncidente.reportado: "recibido",
-    EstadoIncidente.asignado: "asignado",
-    EstadoIncidente.en_camino: "en_atencion",
-    EstadoIncidente.en_sitio: "en_atencion",
-    EstadoIncidente.finalizado: "completado",
-    EstadoIncidente.cancelado: "cancelado",
-}
-
-
 def crear_incidente(db: Session, incidente: IncidenteCreate) -> Incidente:
-    """Create a new incident report"""
-    db_incidente = Incidente(
-        cliente_id=incidente.cliente_id,
-        vehiculo_id=incidente.vehiculo_id,
-        ubicacion_lat=incidente.ubicacion_lat,
-        ubicacion_lng=incidente.ubicacion_lng,
-        descripcion_original=incidente.descripcion_original
-    )
-    db.add(db_incidente)
-    db.commit()
-    db.refresh(db_incidente)
-    
-    db_historia = HistoriaIncidente(
-        incidente_id=db_incidente.id,
-        titulo="Emergencia recibida",
-        descripcion=f"Incidente reportado en coordinates ({db_incidente.ubicacion_lat}, {db_incidente.ubicacion_lng})"
-    )
-    db.add(db_historia)
-    db.commit()
-    
-    return db_incidente
+    from app.modulos.incidentes.services.historia_incidente import crear_incidente as crear_incidente_historia
+    return crear_incidente_historia(db, incidente)
 
 
 def obtener_incidente(db: Session, incidente_id: int) -> Optional[Incidente]:
-    """Get incident by ID"""
     return db.query(Incidente).filter(Incidente.id == incidente_id).first()
 
 
 def obtener_incidentes_cliente(db: Session, cliente_id: int, skip: int = 0, limit: int = 100) -> List[Incidente]:
-    """Get all incidents for a specific client"""
     return db.query(Incidente).filter(
         Incidente.cliente_id == cliente_id
     ).offset(skip).limit(limit).all()
 
 
 def obtener_incidentes_taller(db: Session, taller_id: int, skip: int = 0, limit: int = 100) -> List[Incidente]:
-    """Get all incidents assigned to a specific taller"""
     return db.query(Incidente).join(Asignacion).filter(
         Asignacion.taller_id == taller_id
     ).offset(skip).limit(limit).all()
 
 
 def actualizar_incidente(db: Session, incidente_id: int, incidente_update: IncidenteUpdate) -> Optional[Incidente]:
-    """Update incident with AI analysis results"""
     db_incidente = obtener_incidente(db, incidente_id)
     if not db_incidente:
         return None
@@ -75,115 +51,21 @@ def actualizar_incidente(db: Session, incidente_id: int, incidente_update: Incid
     for field, value in update_data.items():
         setattr(db_incidente, field, value)
     
-    db_incidente.fecha_actualizacion = datetime.utcnow()
+    db_incidente.fecha_actualizacion = now_bolivia()
     db.commit()
     db.refresh(db_incidente)
     return db_incidente
-
-
-def agregar_evidencia(db: Session, evidencia: EvidenciaCreate, transcripcion: Optional[str] = None, descripcion: Optional[str] = None) -> Evidencia:
-    """Add evidence (photo/audio/texto) to an incident"""
-    db_evidencia = Evidencia(
-        incidente_id=evidencia.incidente_id,
-        tipo=evidencia.tipo,
-        url_archivo=evidencia.url_archivo,
-        contenido=evidencia.contenido,
-        transcripcion=transcripcion,
-        descripcion=descripcion
-    )
-    db.add(db_evidencia)
-    db.commit()
-    db.refresh(db_evidencia)
-    return db_evidencia
-
-
-def obtener_evidencias_incidente(db: Session, incidente_id: int) -> List[Evidencia]:
-    """Get all evidences for an incident"""
-    return db.query(Evidencia).filter(Evidencia.incidente_id == incidente_id).all()
 
 
 def cambiar_estado_incidente(db: Session, incidente_id: int, nuevo_estado: EstadoIncidente, notas: Optional[str] = None) -> Optional[Incidente]:
-    """Change incident state and record in history"""
-    db_incidente = obtener_incidente(db, incidente_id)
-    if not db_incidente:
-        return None
-    
-    estado_anterior = db_incidente.estado
-    db_incidente.estado = nuevo_estado
-    db_incidente.fecha_actualizacion = datetime.utcnow()
-    
-    titulo = f"Estado cambiado a {nuevo_estado.value}"
-    descripcion = notas or f"Cambio de {estado_anterior.value} a {nuevo_estado.value}"
-    
-    db_historia = HistoriaIncidente(
-        incidente_id=incidente_id,
-        titulo=titulo,
-        descripcion=descripcion
-    )
-    db.add(db_historia)
-    db.commit()
-    db.refresh(db_incidente)
-    return db_incidente
-
-
-def crear_asignacion(db: Session, incidente_id: int, taller_id: int) -> Asignacion:
-    """Assign incident to a taller"""
-    db_asignacion = Asignacion(
-        incidente_id=incidente_id,
-        taller_id=taller_id,
-        estado=EstadoAsignacion.pendiente
-    )
-    db.add(db_asignacion)
-    db.commit()
-    db.refresh(db_asignacion)
-    return db_asignacion
-
-
-def obtener_asignaciones_incidente(db: Session, incidente_id: int) -> List[Asignacion]:
-    """Get all assignments for an incident"""
-    return db.query(Asignacion).filter(Asignacion.incidente_id == incidente_id).all()
-
-
-def crear_historia_incidente(db: Session, incidente_id: int, historia: HistoriaIncidenteCreate) -> HistoriaIncidente:
-    """Create a new history entry for an incident"""
-    db_historia = HistoriaIncidente(
-        incidente_id=incidente_id,
-        titulo=historia.titulo,
-        descripcion=historia.descripcion
-    )
-    db.add(db_historia)
-    db.commit()
-    db.refresh(db_historia)
-    return db_historia
+    return cambiar_estado_historia(db, incidente_id, nuevo_estado, notas)
 
 
 def obtener_historia_incidente(db: Session, incidente_id: int) -> List[HistoriaIncidente]:
-    """Get all history entries for an incident"""
-    return db.query(HistoriaIncidente).filter(
-        HistoriaIncidente.incidente_id == incidente_id
-    ).order_by(HistoriaIncidente.fecha_hora.desc()).all()
-
-
-def actualizar_asignacion(db: Session, asignacion_id: int, estado: EstadoAsignacion, 
-                         tecnico_id: Optional[int] = None) -> Optional[Asignacion]:
-    """Update assignment status"""
-    db_asignacion = db.query(Asignacion).filter(Asignacion.id == asignacion_id).first()
-    if not db_asignacion:
-        return None
-    
-    db_asignacion.estado = estado
-    if estado == EstadoAsignacion.aceptada:
-        db_asignacion.fecha_aceptacion = datetime.utcnow()
-    elif tecnico_id:
-        db_asignacion.tecnico_id = tecnico_id
-    
-    db.commit()
-    db.refresh(db_asignacion)
-    return db_asignacion
+    return obtener_historia(db, incidente_id)
 
 
 def calcular_distancia(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """Calculate distance between two coordinates using Haversine formula (in kilometers)"""
     R = 6371
     
     lat1_rad = math.radians(lat1)
@@ -202,8 +84,7 @@ def calcular_distancia(lat1: float, lng1: float, lat2: float, lng2: float) -> fl
 
 def buscar_talleres_cercanos(db: Session, lat: float, lng: float, radio_km: float = 10.0, 
                            especialidad: Optional[str] = None) -> List[Taller]:
-    """Find workshops within a given radius"""
-    all_talleres = db.query(Taller).filter(Taller.activo == True).all()
+    all_talleres = db.query(Taller).all()
     
     talleres_cercanos = []
     for taller in all_talleres:
@@ -213,7 +94,7 @@ def buscar_talleres_cercanos(db: Session, lat: float, lng: float, radio_km: floa
                 talleres_cercanos.append((taller, distancia))
             else:
                 for esp in taller.especialidades:
-                    if esp.nombre == especialidad:
+                    if esp.nombre.lower() == especialidad.lower():
                         talleres_cercanos.append((taller, distancia))
                         break
     
@@ -222,14 +103,15 @@ def buscar_talleres_cercanos(db: Session, lat: float, lng: float, radio_km: floa
 
 
 def obtener_estadisticas_incidente(db: Session, incidente_id: int) -> dict:
-    """Get statistics and AI analysis for an incident"""
     incidente = obtener_incidente(db, incidente_id)
     if not incidente:
         return {}
     
-    evidencias = db.query(Evidencia).filter(Evidencia.incidente_id == incidente_id).all()
-    historia = db.query(HistoriaIncidente).filter(HistoriaIncidente.incidente_id == incidente_id).order_by(HistoriaIncidente.fecha_hora.desc()).all()
-    asignaciones = db.query(Asignacion).filter(Asignacion.incidente_id == incidente_id).all()
+    from app.modulos.incidentes.services import evidencia as evidencia_service
+    
+    evidencias = evidencia_service.obtener_evidencias_incidente(db, incidente_id)
+    historia = obtener_historia_incidente(db, incidente_id)
+    asignaciones = asignacion_service.obtener_asignaciones_por_incidente(db, incidente_id)
     
     return {
         "incidente": incidente,

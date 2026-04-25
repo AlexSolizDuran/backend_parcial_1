@@ -9,7 +9,7 @@ from app.modulos.incidentes.services.incidente import obtener_incidente
 from app.modulos.usuarios.models.usuario import Usuario
 from app.core.security import get_current_user
 
-router = APIRouter(prefix="/incidentes", tags=["historia-incidente"])
+router = APIRouter(tags=["historia-incidente"])
 
 
 @router.get("/{incidente_id}/historia", response_model=List[HistoriaIncidenteResponse])

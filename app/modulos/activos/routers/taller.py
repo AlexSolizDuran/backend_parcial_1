@@ -10,6 +10,8 @@ from app.modulos.activos.schemas.taller import (
     EspecialidadCreate, EspecialidadResponse
 )
 from app.modulos.activos.services import taller as taller_service
+from app.modulos.activos.services import historial_taller as historial_service
+from app.modulos.activos.services import especialidad as especialidad_service
 from app.modulos.usuarios.routers.usuario import get_current_user
 from app.modulos.usuarios.models.usuario import Usuario
 
@@ -117,7 +119,15 @@ def get_historial_taller(
     if db_taller.dueño_id != current_user.id:
         raise HTTPException(status_code=403, detail="No tienes permiso para ver el historial")
     
-    return taller_service.obtener_historial_taller(db, taller_id)
+    historial = historial_service.obtener_historial_taller(db, taller_id)
+    return [HistorialTallerResponse(
+        id=h.id,
+        taller_id=h.taller_id,
+        titulo=h.titulo,
+        descripcion=h.descripcion,
+        tipo=h.tipo,
+        fecha=h.fecha.isoformat() if h.fecha else None
+    ) for h in historial]
 
 
 @router.post("/{taller_id}/historial", response_model=HistorialTallerResponse)
@@ -133,7 +143,7 @@ def create_historial_taller(
     if db_taller.dueño_id != current_user.id:
         raise HTTPException(status_code=403, detail="No tienes permiso para agregar historial")
     
-    return taller_service.crear_historial_taller(db, taller_id, historial)
+    return historial_service.crear_historial_taller(db, taller_id, historial)
 
 
 router_esp = APIRouter(prefix="/especialidades", tags=["especialidades"])
@@ -141,7 +151,7 @@ router_esp = APIRouter(prefix="/especialidades", tags=["especialidades"])
 
 @router_esp.get("/", response_model=list[EspecialidadResponse])
 def get_especialidades(db: Session = Depends(get_db)):
-    return taller_service.obtener_especialidades(db)
+    return especialidad_service.obtener_especialidades(db)
 
 
 @router_esp.post("/", response_model=EspecialidadResponse)
@@ -153,7 +163,7 @@ def crear_especialidad(
     if current_user.rol != "dueno":
         raise HTTPException(status_code=403, detail="Solo dueños pueden crear especialidades")
     
-    db_especialidad = taller_service.crear_especialidad(db, especialidad)
+    db_especialidad = especialidad_service.crear_especialidad(db, especialidad)
     if not db_especialidad:
         raise HTTPException(status_code=400, detail="Ya existe una especialidad con ese nombre")
     return db_especialidad
@@ -168,9 +178,9 @@ def eliminar_especialidad(
     if current_user.rol != "dueno":
         raise HTTPException(status_code=403, detail="Solo dueños pueden eliminar especialidades")
     
-    db_especialidad = taller_service.obtener_especialidad(db, especialidad_id)
+    db_especialidad = especialidad_service.obtener_especialidad(db, especialidad_id)
     if not db_especialidad:
         raise HTTPException(status_code=404, detail="Especialidad no encontrada")
     
-    taller_service.eliminar_especialidad(db, especialidad_id)
+    especialidad_service.eliminar_especialidad(db, especialidad_id)
     return {"message": "Especialidad eliminada"}
