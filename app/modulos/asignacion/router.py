@@ -10,7 +10,7 @@ from app.modulos.asignacion import service as asignacion_service
 from app.modulos.asignacion.schema import (
     AsignacionCreate, AsignacionUpdate, AsignacionResponse,
     AsignacionPendienteDetalleResponse, IncidenteDetalleResponse,
-    EvidenciaResponse, ClienteResponse, VehiculoResponse
+    EvidenciaResponse, ClienteResponse, VehiculoResponse, AceptarYAsignarSchema
 )
 from app.modulos.asignacion.model import EstadoAsignacion, now_bolivia
 from app.modulos.incidentes.models.incidente import Incidente, EstadoIncidente
@@ -291,8 +291,7 @@ async def aceptar_asignacion_incidente(
 
 @router.post("/aceptar-y-asignar")
 def aceptar_y_asignar_tecnico(
-    incidente_id: int,
-    tecnico_id: int,
+    data: AceptarYAsignarSchema,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
@@ -311,12 +310,12 @@ def aceptar_y_asignar_tecnico(
     if not taller:
         raise HTTPException(status_code=404, detail="No tienes taller registrado")
 
-    tecnico = db.query(Tecnico).filter(Tecnico.id == tecnico_id).first()
+    tecnico = db.query(Tecnico).filter(Tecnico.id == data.tecnico_id).first()
     if not tecnico or tecnico.taller_id != taller.id:
         raise HTTPException(status_code=404, detail="Técnico no encontrado en tu taller")
 
     from app.modulos.incidentes.models.incidente import Incidente
-    incidente = db.query(Incidente).filter(Incidente.id == incidente_id).first()
+    incidente = db.query(Incidente).filter(Incidente.id == data.incidente_id).first()
     if not incidente:
         raise HTTPException(status_code=404, detail="Incidente no encontrado")
 
@@ -324,7 +323,7 @@ def aceptar_y_asignar_tecnico(
         raise HTTPException(status_code=400, detail="El incidente ya fue asignado")
 
     existente = db.query(asignacion_service.Asignacion).filter(
-        asignacion_service.Asignacion.incidente_id == incidente_id,
+        asignacion_service.Asignacion.incidente_id == data.incidente_id,
         asignacion_service.Asignacion.taller_id == taller.id,
         asignacion_service.Asignacion.estado == EstadoAsignacion.aceptada
     ).first()
@@ -332,28 +331,31 @@ def aceptar_y_asignar_tecnico(
         raise HTTPException(status_code=400, detail="Ya tienes una asignación aceptada para este incidente")
 
     asignacion = asignacion_service.crear_asignacion_aceptada(
-        db, incidente_id, taller.id, tecnico_id
+        db, data.incidente_id, taller.id, data.tecnico_id
     )
 
     incidente.estado = EstadoIncidente.asignado
     db.commit()
 
-    historia_service.crear_historia_incidente(db, incidente_id, "Incidente asignado", 
-        f"Taller {taller.nombre} aceptó el incidente y asignó al técnico")
+    historia_service.crear_historia_incidente(db, data.incidente_id, "Incidente asignado", 
+                                          f"Asignado a técnico {tecnico.usuario.nombre if tecnico.usuario else ''}")
 
-    crear_notificacion(db, NotificacionCreate(
-        usuario_id=tecnico.usuario_id,
-        titulo="Nuevo incidente asignado",
-        mensaje=f"Se te ha asignado el incidente #{incidente_id}",
-        tipo="incidente_asignado"
+    # Notificar al cliente
+    db.add(crear_notificacion(
+        db, NotificacionCreate(
+            usuario_id=incidente.cliente_id,
+            titulo="Incidente aceptado",
+            mensaje=f"El taller {taller.nombre} ha aceptado tu incidente. Te atenderán pronto.",
+            tipo="incidente_aceptado"
+        )
     ))
+    db.commit()
 
     return {
         "asignacion_id": asignacion.id,
-        "incidente_id": incidente_id,
-        "taller_id": taller.id,
-        "tecnico_id": tecnico_id,
-        "estado": "aceptada"
+        "estado": "aceptada",
+        "incidente_id": asignacion.incidente_id,
+        "taller_id": asignacion.taller_id
     }
 
 

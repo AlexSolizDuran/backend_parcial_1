@@ -83,3 +83,7 @@ class AsignacionPendienteDetalleResponse(BaseModel):
     asignacion: AsignacionResponse
     incidente: IncidenteDetalleResponse
     tiempo_restante_segundos: int
+
+class AceptarYAsignarSchema(BaseModel):
+    incidente_id: int
+    tecnico_id: int
