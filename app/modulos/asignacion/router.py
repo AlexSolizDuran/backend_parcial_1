@@ -189,7 +189,7 @@ def actualizar_asignacion(
 
 
 @router.put("/{asignacion_id}/rechazar", response_model=dict)
-def rechazar_asignacion(
+async def rechazar_asignacion(
     asignacion_id: int,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
@@ -210,7 +210,20 @@ def rechazar_asignacion(
     
     incidente = db.query(Incidente).filter(Incidente.id == asignacion.incidente_id).first()
     
+    # Agregar historial del rechazo
+    if incidente:
+        from app.modulos.incidentes.models.historial import HistoriaIncidente
+        db_historial = HistoriaIncidente(
+            incidente_id=incidente.id,
+            titulo="Taller rechazado",
+            descripcion=f"Taller {taller.nombre} ha rechazado el incidente"
+        )
+        db.add(db_historial)
+    
     asignacion.estado = EstadoAsignacion.rechazada
+    asignacion.rechazados_ids = asignacion.rechazados_ids + f",{asignacion.taller_id}" if asignacion.rechazados_ids else str(asignacion.taller_id)
+    # Establecer timeout de 10 segundos antes de permitir nuevos intentos para este incidente
+    asignacion.proximo_reintento = now_bolivia() + timedelta(seconds=10)
     db.commit()
     
     if incidente and incidente.cliente_id:
@@ -223,6 +236,15 @@ def rechazar_asignacion(
             mensaje=f"El taller {taller.nombre} no puede atenderte. Buscando otro taller...",
             tipo="taller_rechazo"
         ))
+        
+        # Enviar notificación push al cliente por WebSocket
+        from app.modulos.incidentes.services.notificacion import NotificacionService
+        await NotificacionService.notificar_cliente_rechazo(
+            db=db,
+            cliente_id=incidente.cliente_id,
+            incidente_id=incidente.id,
+            taller_rechazado_id=taller.id
+        )
     
     resultado = reintentar_asignacion(db, asignacion.incidente_id, asignacion.taller_id)
     
@@ -255,20 +277,50 @@ async def aceptar_asignacion_incidente(
         raise HTTPException(status_code=400, detail="Solo puedes aceptar asignaciones pendientes")
     
     incidente = db.query(Incidente).filter(Incidente.id == asignacion.incidente_id).first()
-    
-    asignacion_service.aceptar_asignacion(db, asignacion_id, tecnico_id)
+     
+    asignacion_aceptada = asignacion_service.aceptar_asignacion(db, asignacion_id, tecnico_id)
+     
+    if asignacion_aceptada is None:
+        raise HTTPException(
+            status_code=409, 
+            detail="Este incidente ya tiene una asignación aceptada. No se puede aceptar otra."
+        )
+     
+    # La función ya canceló las demás asignaciones pendientes, no es necesario hacerlo de nuevo
     
     if incidente:
         incidente.estado = EstadoIncidente.asignado
+        # Establecer timeout de 10 segundos para evitar búsquedas inmediatas después de aceptación
+        # Buscar asignaciones pendientes para este incidente y establecer timeout
+        asignaciones_pendientes = db.query(asignacion_service.Asignacion).filter(
+            asignacion_service.Asignacion.incidente_id == incidente.id,
+            asignacion_service.Asignacion.estado == EstadoAsignacion.pendiente
+        ).all()
+        for asignacion in asignaciones_pendientes:
+            asignacion.proximo_reintento = now_bolivia() + timedelta(seconds=10)
         db.commit()
         
-        asyncio.create_task(
-            NotificacionService.notificar_cliente_asignado(
-                db=db,
-                cliente_id=incidente.cliente_id,
-                incidente_id=incidente.id,
-                taller_id=taller.id
-            )
+        from app.modulos.incidentes.services import historia_incidente as historia_service
+        db_historial = historia_service.HistoriaIncidente(
+            incidente_id=incidente.id,
+            titulo="Técnico asignado",
+            descripcion=f"Taller {taller.nombre} ha aceptado el incidente y asignado un técnico"
+        )
+        db.add(db_historial)
+        db.commit()
+        
+        await NotificacionService.notificar_cliente_asignado(
+            db=db,
+            cliente_id=incidente.cliente_id,
+            incidente_id=incidente.id,
+            taller_id=taller.id
+        )
+        
+        await NotificacionService.notificar_tecnico_por_user_id(
+            db=db,
+            tecnico_user_id=tecnico.usuario_id,
+            incidente_id=incidente.id,
+            mensaje=f"Se te ha asignado el incidente #{incidente.id}"
         )
         
         from app.modulos.usuarios.services.notificacion import crear_notificacion
@@ -280,6 +332,7 @@ async def aceptar_asignacion_incidente(
             mensaje=f"El taller {taller.nombre} ha aceptado tu incidente. Te atenderán pronto.",
             tipo="incidente_asignado"
         ))
+        db.commit()
     
     return {
         "asignacion_id": asignacion_id,
@@ -295,6 +348,7 @@ def aceptar_y_asignar_tecnico(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
+    
     """Acepta un incidente y asigna un técnico -> crea asignación aceptada"""
     from app.modulos.activos.models.taller import Taller
     from app.modulos.usuarios.models.tecnico import Tecnico
@@ -319,7 +373,13 @@ def aceptar_y_asignar_tecnico(
     if not incidente:
         raise HTTPException(status_code=404, detail="Incidente no encontrado")
 
-    if incidente.estado not in [EstadoIncidente.reportado, EstadoIncidente.sin_talleres]:
+    # Verificar si ya existe una asignación con técnico vinculado
+    asignacion_con_tecnico = db.query(asignacion_service.Asignacion).filter(
+        asignacion_service.Asignacion.incidente_id == data.incidente_id,
+        asignacion_service.Asignacion.tecnico_id.isnot(None)
+    ).first()
+    
+    if asignacion_con_tecnico:
         raise HTTPException(status_code=400, detail="El incidente ya fue asignado")
 
     existente = db.query(asignacion_service.Asignacion).filter(
@@ -337,8 +397,12 @@ def aceptar_y_asignar_tecnico(
     incidente.estado = EstadoIncidente.asignado
     db.commit()
 
-    historia_service.crear_historia_incidente(db, data.incidente_id, "Incidente asignado", 
-                                          f"Asignado a técnico {tecnico.usuario.nombre if tecnico.usuario else ''}")
+    from app.modulos.incidentes.schemas.historia_incidente import HistoriaIncidenteCreate
+    historia = HistoriaIncidenteCreate(
+        titulo="Incidente asignado",
+        descripcion=f"Asignado a técnico {tecnico.usuario.nombre if tecnico.usuario else ''}"
+    )
+    historia_service.crear_historia_incidente(db, data.incidente_id, historia)
 
     # Notificar al cliente
     db.add(crear_notificacion(
@@ -349,6 +413,22 @@ def aceptar_y_asignar_tecnico(
             tipo="incidente_aceptado"
         )
     ))
+    
+    # Notificar al técnico
+    from app.modulos.usuarios.models.usuario import Usuario as UsuarioModel
+    cliente = db.query(UsuarioModel).filter(UsuarioModel.id == incidente.cliente_id).first()
+    
+    db.add(crear_notificacion(
+        db, NotificacionCreate(
+            usuario_id=tecnico.usuario_id,
+            titulo="Nuevo incidente asignado",
+            mensaje=f"Se te ha asignado el incidente #{incidente.id}. Cliente: {cliente.nombre if cliente else ''}",
+            tipo="incidente_asignado_tecnico"
+        )
+    ))
+    
+    print("Estado incidente:", incidente.estado)
+    print("Permitidos:", EstadoIncidente.reportado, EstadoIncidente.sin_talleres)
     db.commit()
 
     return {

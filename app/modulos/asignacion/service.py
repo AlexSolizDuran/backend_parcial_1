@@ -97,13 +97,44 @@ def aceptar_asignacion(db: Session, asignacion_id: int, tecnico_id: Optional[int
     if db_asignacion.estado != EstadoAsignacion.pendiente:
         return None
     
+    # Verificar si el incidente ya tiene una asignación aceptada (excluyendo la actual)
+    incidente_id = db_asignacion.incidente_id
+    asignacion_existente = db.query(Asignacion).filter(
+        Asignacion.incidente_id == incidente_id,
+        Asignacion.estado == EstadoAsignacion.aceptada,
+        Asignacion.id != asignacion_id
+    ).first()
+    if asignacion_existente:
+        # Ya hay una asignación aceptada para este incidente - rechazar esta asignación
+        db_asignacion.estado = EstadoAsignacion.rechazada
+        db_asignacion.fecha_rechazo = now_bolivia()
+        # Establecer timeout de 10 segundos antes de permitir nuevos intentos
+        db_asignacion.proximo_reintento = now_bolivia() + timedelta(seconds=10)
+        db.commit()
+        db.refresh(db_asignacion)
+        return None  # Indicar que fue rechazada por conflicto
+    
+    # No hay conflicto, proceder con la aceptación
     db_asignacion.estado = EstadoAsignacion.aceptada
     db_asignacion.fecha_aceptacion = now_bolivia()
     if tecnico_id:
         db_asignacion.tecnico_id = tecnico_id
+    # Establecer timeout de 10 segundos antes de permitir nuevos intentos
+    db_asignacion.proximo_reintento = now_bolivia() + timedelta(seconds=10)
     
     db.commit()
     db.refresh(db_asignacion)
+    
+    # Cancelar todas las demás asignaciones pendientes para este incidente
+    otras_pendientes = db.query(Asignacion).filter(
+        Asignacion.incidente_id == incidente_id,
+        Asignacion.estado == EstadoAsignacion.pendiente,
+        Asignacion.id != asignacion_id
+    ).all()
+    for otra in otras_pendientes:
+        otra.estado = EstadoAsignacion.cancelada
+    db.commit()
+    
     return db_asignacion
 
 

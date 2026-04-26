@@ -22,7 +22,9 @@ def get_mis_notificaciones(
     current_user: Usuario = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return notificacion_service.obtener_notificaciones_usuario(db, current_user.id, skip, limit)
+    notificaciones = notificacion_service.obtener_notificaciones_usuario(db, current_user.id, skip, limit)
+    
+    return notificaciones
 
 
 @router.get("/{notificacion_id}", response_model=NotificacionResponse)

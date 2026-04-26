@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from app.core.config import settings
-
+from app.db.database import get_db
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="usuarios/usuario/login")
 
@@ -26,19 +26,17 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(lambda: None)) -> 'Usuario':
+def get_current_user(
+    token: str = Depends(oauth2_scheme), 
+    db_session: Session = Depends(get_db) 
+) -> 'Usuario':
     """Get current user from JWT token"""
-    # Import db here to avoid circular import
-    from app.db.database import get_db
     
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="No se pudieron validar las credenciales",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
-    # Get db session
-    db_session = next(get_db())
     
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
@@ -49,7 +47,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
 
     from app.modulos.usuarios.services.usuario import obtener_usuario_por_username
-    user = obtener_usuario_por_username(db_session, username)
+    # 3. USAR LA SESIÓN INYECTADA
+    user = obtener_usuario_por_username(db_session, username) 
+    
     if user is None:
         raise credentials_exception
+        
     return user

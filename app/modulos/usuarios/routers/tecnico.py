@@ -13,6 +13,7 @@ from app.modulos.usuarios.schemas.tecnico import TecnicoResponse, TecnicoCreate
 from app.modulos.usuarios.services import tecnico as tecnico_service
 from app.modulos.usuarios.routers.usuario import get_current_user
 from app.modulos.activos.models.taller import Taller
+from app.modulos.incidentes.services.notificacion import NotificacionService
 
 router = APIRouter(prefix="/tecnicos")
 
@@ -81,7 +82,7 @@ def get_mi_incidente(
         taller = db.query(Taller).filter(Taller.id == db_tecnico.taller_id).first()
 
     asignacion = db.query(asignacion_service.Asignacion).filter(
-        asignacion_service.Asignacion.tecnico_id == current_user.id,
+        asignacion_service.Asignacion.tecnico_id == db_tecnico.id,
         asignacion_service.Asignacion.estado.in_([
             asignacion_service.EstadoAsignacion.aceptada,
             asignacion_service.EstadoAsignacion.pendiente
@@ -89,7 +90,6 @@ def get_mi_incidente(
     ).order_by(asignacion_service.Asignacion.fecha_asignacion.desc()).first()
 
     if not asignacion:
-        logger.info(f"No hay asignación para técnico {db_tecnico.id}")
         return {
             "tiene_incidente": False,
             "tecnico": {
@@ -110,7 +110,15 @@ def get_mi_incidente(
         }
 
     logger.info(f"Asignación encontrada: id={asignacion.id}, estado={asignacion.estado}")
-    incidente = db.query(Incidente).filter(Incidente.id == asignacion.incidente_id).first()
+    incidente = db.query(Incidente).filter(
+        Incidente.id == asignacion.incidente_id,
+        Incidente.estado.in_([
+            EstadoIncidente.asignado,
+            EstadoIncidente.en_camino,
+            EstadoIncidente.en_sitio
+        ])
+    ).first()
+    
     if not incidente:
         return {
             "tiene_incidente": False,
@@ -156,24 +164,37 @@ def get_mi_incidente(
             "id": incidente.id,
             "estado": incidente.estado.value,
             "prioridad": incidente.prioridad.value if incidente.prioridad else None,
+            "descripcion": incidente.descripcion_original,
             "descripcion": incidente.descripcion,
             "descripcion_ia": incidente.descripcion_ia,
             "ubicacion_lat": incidente.ubicacion_lat,
             "ubicacion_lng": incidente.ubicacion_lng,
-            "direccion": incidente.direccion,
+            "direccion": None,
+            "mensaje_solicitud": incidente.mensaje_solicitud,
             "fecha_creacion": incidente.fecha_creacion.isoformat() if incidente.fecha_creacion else None,
             "cliente": {
                 "id": cliente.id,
                 "nombre": cliente.nombre,
+                "email": cliente.email,
                 "telefono": cliente.telefono
             } if cliente else None,
             "vehiculo": {
                 "id": vehiculo.id,
                 "marca": vehiculo.marca,
                 "modelo": vehiculo.modelo,
-                "patente": vehiculo.patente,
-                "anio": vehiculo.anio
-            } if vehiculo else None
+                "patente": vehiculo.placa,
+                "color": vehiculo.color,
+            } if vehiculo else None,
+            "evidencias": [
+                {
+                    "id": ev.id,
+                    "tipo": ev.tipo,
+                    "url_archivo": ev.url_archivo,
+                    "contenido": ev.contenido,
+                    "transcripcion": ev.transcripcion,
+                    "descripcion": ev.descripcion,
+                } for ev in incidente.evidencias
+            ] if incidente.evidencias else []
         }
     }
 
@@ -188,7 +209,7 @@ class ActualizarUbicacionRequest(BaseModel):
 
 
 @router.put("/{tecnico_id}/actualizar-estado", response_model=dict)
-def actualizar_estado_incidente(
+async def actualizar_estado_incidente(
     tecnico_id: int,
     request: ActualizarEstadoRequest,
     db: Session = Depends(get_db),
@@ -208,7 +229,7 @@ def actualizar_estado_incidente(
         raise HTTPException(status_code=403, detail="No tienes permiso para actualizar este incidente")
 
     asignacion = db.query(asignacion_service.Asignacion).filter(
-        asignacion_service.Asignacion.tecnico_id == current_user.id,
+        asignacion_service.Asignacion.tecnico_id == db_tecnico.id,
         asignacion_service.Asignacion.estado == asignacion_service.EstadoAsignacion.aceptada
     ).order_by(asignacion_service.Asignacion.fecha_asignacion.desc()).first()
 
@@ -250,8 +271,109 @@ def actualizar_estado_incidente(
         )
         db.add(db_historial)
         db.commit()
-
+        
+        from app.modulos.usuarios.services.notificacion import crear_notificacion
+        from app.modulos.usuarios.schemas.notificacion import NotificacionCreate
+        
+        tipo_notificacion = f"incidente_{request.estado}"
+        
+        mensaje_cliente = descripcion
+        titulo_notif = titulo
+        
+        if request.estado == "en_camino":
+            titulo_notif = "Técnico en camino"
+            mensaje_cliente = "El técnico se está dirigiendo a tu ubicación"
+        elif request.estado == "en_sitio":
+            titulo_notif = "Técnico llegó al lugar"
+            mensaje_cliente = "El técnico ha llegado a tu ubicación"
+        elif request.estado == "finalizado":
+            titulo_notif = "Incidente resuelto"
+            mensaje_cliente = "Tu incidente ha sido resuelto. ¡Gracias por usar AUXIA!"
+        
+        db.add(crear_notificacion(
+            db, NotificacionCreate(
+                usuario_id=incidente.cliente_id,
+                titulo=titulo_notif,
+                mensaje=mensaje_cliente,
+                tipo=tipo_notificacion
+            )
+        ))
+        db.commit()
+        
+        await NotificacionService.notificar_cambio_estado(
+            incidente_id=incidente.id,
+            cliente_id=incidente.cliente_id,
+            nuevo_estado=request.estado,
+            mensaje=mensaje_cliente
+        )
+        
     return {"message": "Estado actualizado", "nuevo_estado": incidente.estado.value}
+
+
+class CancelarIncidenteRequest(BaseModel):
+    motivo: str
+
+
+@router.put("/{tecnico_id}/cancelar-incidente", response_model=dict)
+def cancelar_incidente(
+    tecnico_id: int,
+    request: CancelarIncidenteRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """Cancela el incidente asignado al técnico"""
+    from app.modulos.usuarios.models.tecnico import Tecnico
+    from app.modulos.asignacion import service as asignacion_service
+    from app.modulos.incidentes.models.incidente import Incidente, EstadoIncidente
+    from app.modulos.incidentes.services import historia_incidente as historia_service
+
+    db_tecnico = db.query(Tecnico).filter(Tecnico.id == tecnico_id).first()
+    if not db_tecnico:
+        raise HTTPException(status_code=404, detail=f"Técnico con ID {tecnico_id} no encontrado")
+
+    if db_tecnico.usuario_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No tienes permiso para cancelar este incidente")
+
+    asignacion = db.query(asignacion_service.Asignacion).filter(
+        asignacion_service.Asignacion.tecnico_id == db_tecnico.id,
+        asignacion_service.Asignacion.estado == asignacion_service.EstadoAsignacion.aceptada
+    ).order_by(asignacion_service.Asignacion.fecha_asignacion.desc()).first()
+
+    if not asignacion:
+        raise HTTPException(status_code=404, detail="No tienes ningún incidente asignado aceptar")
+
+    incidente = db.query(Incidente).filter(Incidente.id == asignacion.incidente_id).first()
+    if not incidente:
+        raise HTTPException(status_code=404, detail="Incidente no encontrado")
+
+    incidente.estado = EstadoIncidente.cancelado
+    asignacion.estado = asignacion_service.EstadoAsignacion.rechazada
+    db.commit()
+    db.refresh(incidente)
+    db.refresh(asignacion)
+
+    db_historial = historia_service.HistoriaIncidente(
+        incidente_id=incidente.id,
+        titulo="Incidente cancelado",
+        descripcion=f"Motivo: {request.motivo}"
+    )
+    db.add(db_historial)
+    db.commit()
+
+    from app.modulos.usuarios.services.notificacion import crear_notificacion
+    from app.modulos.usuarios.schemas.notificacion import NotificacionCreate
+
+    db.add(crear_notificacion(
+        db, NotificacionCreate(
+            usuario_id=incidente.cliente_id,
+            titulo="Incidente cancelado",
+            mensaje=f"El incidente ha sido cancelado. Motivo: {request.motivo}",
+            tipo="incidente_cancelado"
+        )
+    ))
+    db.commit()
+
+    return {"message": "Incidente cancelado", "estado": "cancelado"}
 
 
 @router.put("/{tecnico_id}/ubicacion", response_model=dict)
@@ -299,7 +421,7 @@ def get_historial_tecnico(
         raise HTTPException(status_code=404, detail="No eres técnico")
     
     asignaciones = db.query(asignacion_service.Asignacion).filter(
-        asignacion_service.Asignacion.tecnico_id == current_user.id
+        asignacion_service.Asignacion.tecnico_id == db_tecnico.id
     ).offset(skip).limit(limit).all()
     
     historial = []
@@ -322,13 +444,13 @@ def get_historial_tecnico(
                 "descripcion": incidente.descripcion,
                 "ubicacion_lat": incidente.ubicacion_lat,
                 "ubicacion_lng": incidente.ubicacion_lng,
-                "direccion": incidente.direccion,
+            "direccion": None,
                 "fecha_creacion": incidente.fecha_creacion.isoformat() if incidente.fecha_creacion else None,
                 "fecha_fin": asignacion.fecha_fin.isoformat() if asignacion.fecha_fin else None,
                 "vehiculo": {
                     "marca": vehiculo.marca if vehiculo else None,
                     "modelo": vehiculo.modelo if vehiculo else None,
-                    "patente": vehiculo.patente if vehiculo else None,
+                    "patente": vehiculo.placa if vehiculo else None,
                 } if vehiculo else None,
                 "cliente": {
                     "nombre": cliente.nombre if cliente else None,

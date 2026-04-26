@@ -12,10 +12,11 @@ class WebSocketManager:
     def __init__(self):
         self.active_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
         self.client_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
+        self.tecnico_connections: Dict[int, Set[WebSocket]] = defaultdict(set)
         self.connection_info: Dict[WebSocket, dict] = {}
     
-    async def connect(self, websocket: WebSocket, taller_id: int = None, user_id: int = None, cliente_id: int = None):
-        logger.info(f"WS connect called: taller_id={taller_id}, user_id={user_id}, cliente_id={cliente_id}")
+    async def connect(self, websocket: WebSocket, taller_id: int = None, user_id: int = None, cliente_id: int = None, tecnico_id: int = None):
+        logger.info(f"WS connect called: taller_id={taller_id}, user_id={user_id}, cliente_id={cliente_id}, tecnico_id={tecnico_id}")
         
         if taller_id:
             self.active_connections[taller_id].add(websocket)
@@ -35,6 +36,15 @@ class WebSocketManager:
                 "connected_at": asyncio.get_event_loop().time()
             }
             logger.info(f"WebSocket connected for cliente_id: {cliente_id}")
+        
+        if tecnico_id:
+            self.tecnico_connections[tecnico_id].add(websocket)
+            self.connection_info[websocket] = {
+                "tecnico_id": tecnico_id,
+                "tipo": "tecnico",
+                "connected_at": asyncio.get_event_loop().time()
+            }
+            logger.info(f"WebSocket connected for tecnico_id: {tecnico_id}")
     
     def disconnect(self, websocket: WebSocket):
         info = self.connection_info.pop(websocket, {})
@@ -55,6 +65,14 @@ class WebSocketManager:
                 if not self.client_connections[cliente_id]:
                     del self.client_connections[cliente_id]
                 logger.info(f"WebSocket disconnected for cliente_id: {cliente_id}")
+        
+        elif tipo == "tecnico":
+            tecnico_id = info.get("tecnico_id")
+            if tecnico_id and tecnico_id in self.tecnico_connections:
+                self.tecnico_connections[tecnico_id].discard(websocket)
+                if not self.tecnico_connections[tecnico_id]:
+                    del self.tecnico_connections[tecnico_id]
+                logger.info(f"WebSocket disconnected for tecnico_id: {tecnico_id}")
     
     async def send_personal_message(self, message: dict, websocket: WebSocket):
         try:
@@ -95,6 +113,23 @@ class WebSocketManager:
         for connection in disconnected:
             self.disconnect(connection)
     
+    async def send_to_tecnico(self, message: dict, tecnico_id: int):
+        if tecnico_id not in self.tecnico_connections:
+            logger.info(f"No WebSocket connection for tecnico_id: {tecnico_id}")
+            return
+        
+        disconnected = set()
+        
+        for connection in self.tecnico_connections[tecnico_id]:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.error(f"Error sending to tecnico {tecnico_id}: {e}")
+                disconnected.add(connection)
+        
+        for connection in disconnected:
+            self.disconnect(connection)
+    
     async def notify_nearby_talleres(self, message: dict, taller_ids: List[int]):
         for taller_id in taller_ids:
             await self.send_to_taller(message, taller_id)
@@ -120,8 +155,8 @@ class WebSocketManager:
 ws_manager = WebSocketManager()
 
 
-async def websocket_endpoint(websocket: WebSocket, taller_id: int = None, cliente_id: int = None):
-    await ws_manager.connect(websocket, taller_id=taller_id, cliente_id=cliente_id)
+async def websocket_endpoint(websocket: WebSocket, taller_id: int = None, cliente_id: int = None, tecnico_id: int = None):
+    await ws_manager.connect(websocket, taller_id=taller_id, cliente_id=cliente_id, tecnico_id=tecnico_id)
     
     try:
         while True:
@@ -174,7 +209,25 @@ async def websocket_endpoint(websocket: WebSocket, taller_id: int = None, client
                             {"type": "subscribed_cliente", "cliente_id": new_cliente_id},
                             websocket
                         )
-                            
+                
+                elif message_type == "subscribe_tecnico":
+                    new_tecnico_id = message.get("tecnico_id")
+                    if new_tecnico_id:
+                        old_info = ws_manager.connection_info.get(websocket, {})
+                        old_tecnico_id = old_info.get("tecnico_id")
+                        
+                        if old_tecnico_id:
+                            ws_manager.tecnico_connections[old_tecnico_id].discard(websocket)
+                        
+                        ws_manager.tecnico_connections[new_tecnico_id].add(websocket)
+                        ws_manager.connection_info[websocket]["tecnico_id"] = new_tecnico_id
+                        ws_manager.connection_info[websocket]["tipo"] = "tecnico"
+                        
+                        await ws_manager.send_personal_message(
+                            {"type": "subscribed_tecnico", "tecnico_id": new_tecnico_id},
+                            websocket
+                        )
+                    
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON received: {data}")
                 

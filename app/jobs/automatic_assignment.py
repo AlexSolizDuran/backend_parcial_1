@@ -84,7 +84,7 @@ def obtener_talleres_con_especialidad(db: Session, taller_ids: List[int], especi
 
 
 def obtener_siguiente_talleres(db: Session, incidente_id: int, especialidad: str = None, radio_km: float = 10.0) -> List[int]:
-    """Busca talleres disponibles para un incidente, excluyendo rechazados"""
+    """Busca talleres disponibles para un incidente, excluyendo rechazados y aceptados"""
     incidente = db.query(Incidente).filter(Incidente.id == incidente_id).first()
     if not incidente:
         return []
@@ -93,17 +93,24 @@ def obtener_siguiente_talleres(db: Session, incidente_id: int, especialidad: str
         Asignacion.incidente_id == incidente_id
     ).all()
     
-    rechazados_ids = []
-    asignados_ids = []
+    rechazados_ids = set()
+    asignados_ids = set()
+    aceptados_ids = set()
+    
     for a in todas_asignaciones:
-        rechazados_ids.append(str(a.taller_id))
-        asignados_ids.append(a.taller_id)
+        if a.taller_id:
+            rechazados_ids.add(a.taller_id)
+        
+        if a.estado == EstadoAsignacion.aceptada:
+            aceptados_ids.add(a.taller_id)
+        elif a.estado == EstadoAsignacion.pendiente:
+            asignados_ids.add(a.taller_id)
     
     talleres = buscar_talleres_cercanos(
         db, incidente.ubicacion_lat, incidente.ubicacion_lng, radio_km
     )
     
-    talleres_ids = [t.id for t in talleres if t.id not in asignados_ids]
+    talleres_ids = [t.id for t in talleres if t.id not in rechazados_ids and t.id not in aceptados_ids]
     
     if especialidad:
         talleres_ids = obtener_talleres_con_especialidad(db, talleres_ids, especialidad)
@@ -125,20 +132,58 @@ def verificar_asignaciones_expiradas(db: Session) -> List[dict]:
     ).all()
     
     for asignacion in asignaciones_expiradas:
-        incidente = db.query(Incidente).filter(Incidente.id == asignacion.incidente_id).first()
+        reload_asignacion = db.query(Asignacion).filter(Asignacion.id == asignacion.id).first()
+        if not reload_asignacion or reload_asignacion.estado != EstadoAsignacion.pendiente:
+            continue
+        
+        incidente = db.query(Incidente).filter(Incidente.id == reload_asignacion.incidente_id).first()
         if not incidente or not incidente.estado:
             continue
         
-        if incidente.estado.value in ['asignado', 'finalizado']:
+        # Verificar si ya fue asignado o necesita más información
+        if incidente.estado.value in ['asignado', 'finalizado', 'cancelado', 'sin_talleres']:
             continue
         
-        asignacion.estado = EstadoAsignacion.expirada
-        asignacion.rechazados_ids = asignacion.rechazados_ids + f",{asignacion.taller_id}" if asignacion.rechazados_ids else str(asignacion.taller_id)
+        # Verificar si requiere más evidencia - no reasignar
+        if incidente.requiere_mas_evidencia == 1:
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            db.commit()
+            continue
+        
+        # Verificar si ya fue analizado por IA
+        if not incidente.especialidad_ia or incidente.especialidad_ia == 'desconocido':
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            db.commit()
+            continue
+        
+        # VERIFICAR si ya hay una asignación aceptada - si es así, NO procesar más
+        asignacion_aceptada = db.query(Asignacion).filter(
+            Asignacion.incidente_id == incidente.id,
+            Asignacion.estado == EstadoAsignacion.aceptada
+        ).first()
+        if asignacion_aceptada:
+            # Ya hay una aceptada - marcar esta como expirada y cancelar otras pendientes
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            reload_asignacion.rechazados_ids = reload_asignacion.rechazados_ids + f",{reload_asignacion.taller_id}" if reload_asignacion.rechazados_ids else str(reload_asignacion.taller_id)
+            
+            # Cancelar otras asignaciones pendientes por si acaso
+            otras_pendientes = db.query(Asignacion).filter(
+                Asignacion.incidente_id == incidente.id,
+                Asignacion.estado == EstadoAsignacion.pendiente,
+                Asignacion.id != reload_asignacion.id
+            ).all()
+            for otra in otras_pendientes:
+                otra.estado = EstadoAsignacion.cancelada
+            db.commit()
+            continue
+        
+        reload_asignacion.estado = EstadoAsignacion.expirada
+        reload_asignacion.rechazados_ids = reload_asignacion.rechazados_ids + f",{reload_asignacion.taller_id}" if reload_asignacion.rechazados_ids else str(reload_asignacion.taller_id)
         db.commit()
         
-        _notify_async(NotificacionService.notificar_cliente_expirado(db, incidente.cliente_id, incidente.id, asignacion.taller_id))
+        _notify_async(NotificacionService.notificar_cliente_expirado(db, incidente.cliente_id, incidente.id, reload_asignacion.taller_id))
         
-        taller_exp = db.query(Taller).filter(Taller.id == asignacion.taller_id).first()
+        taller_exp = db.query(Taller).filter(Taller.id == reload_asignacion.taller_id).first()
         taller_exp_nombre = taller_exp.nombre if taller_exp else "Taller"
         _crear_notificacion_cliente(
             db, incidente.cliente_id,
@@ -147,9 +192,41 @@ def verificar_asignaciones_expiradas(db: Session) -> List[dict]:
             "taller_expirado"
         )
         
+        # VERIFICAR si ya hay asignación aceptada ANTES de buscar otro taller
+        asignacion_aceptada_existente = db.query(Asignacion).filter(
+            Asignacion.incidente_id == incidente.id,
+            Asignacion.estado == EstadoAsignacion.aceptada
+        ).first()
+        if asignacion_aceptada_existente:
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            db.commit()
+            continue
+        
+        # Verificar si ya hay asignación completada
+        asignacion_completada = db.query(Asignacion).filter(
+            Asignacion.incidente_id == incidente.id,
+            Asignacion.estado == EstadoAsignacion.completada
+        ).first()
+        if asignacion_completada:
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            db.commit()
+            continue
+        
+        # Verificar si el incidente ya está en estado final
+        if incidente.estado.value in ['asignado', 'en_camino', 'en_sitio', 'finalizado']:
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            db.commit()
+            continue
+        
         siguientes = obtener_siguiente_talleres(
             db, incidente.id, incidente.especialidad_ia, 10.0
         )
+        
+        # Verificar que el incidente ya fue analizado por IA antes de asignar
+        if not siguientes or not incidente or not incidente.especialidad_ia or incidente.especialidad_ia == 'desconocido' or incidente.requiere_mas_evidencia == 1:
+            reload_asignacion.estado = EstadoAsignacion.expirada
+            db.commit()
+            continue
         
         if siguientes:
             nuevo_taller_id = siguientes[0]
@@ -165,7 +242,7 @@ def verificar_asignaciones_expiradas(db: Session) -> List[dict]:
             ))
             
             resultados.append({
-                "asignacion_id": asignacion.id,
+                "asignacion_id": reload_asignacion.id,
                 "nuevo_taller_id": nuevo_taller_id,
                 "nueva_asignacion_id": nueva_asignacion.id,
                 "taller_nombre": taller.nombre if taller else "Desconocido"
@@ -184,7 +261,7 @@ def verificar_asignaciones_expiradas(db: Session) -> List[dict]:
             )
             
             resultados.append({
-                "asignacion_id": asignacion.id,
+                "asignacion_id": reload_asignacion.id,
                 "sin_talleres": True,
                 "incidente_id": incidente.id
             })
@@ -198,8 +275,35 @@ def reintentar_asignacion(db: Session, incidente_id: int, taller_rechazado_id: i
     if not incidente or not incidente.estado:
         return {"success": False, "error": "Incidente no encontrado o sin estado"}
     
-    if incidente.estado.value in ['asignado', 'finalizado']:
-        return {"success": False, "error": "Incidente ya asignado"}
+    # Verificar si el incidente ya fue analizado por IA
+    # Si no tiene especialidad_ia, significa que aún no fue analizado
+    if not incidente.especialidad_ia or incidente.especialidad_ia == 'desconocido':
+        return {"success": False, "error": "Incidente aún no ha sido analizado por IA"}
+    
+    # Si requiere más información, no buscar taller
+    if incidente.requiere_mas_evidencia == 1:
+        return {"success": False, "error": "Se requiere más información del incidente"}
+    
+    # Ya fue asignado o finalizado - no reintentar
+    if incidente.estado.value in ['asignado', 'en_camino', 'en_sitio', 'finalizado']:
+        return {"success": False, "error": "Incidente ya asignado o finalizado"}
+    
+    # Si está en sin_talleres, verificar si ya hay asignación aceptada
+    if incidente.estado.value == 'sin_talleres':
+        asignacion_existente = db.query(Asignacion).filter(
+            Asignacion.incidente_id == incidente_id,
+            Asignacion.estado.in_([EstadoAsignacion.aceptada, EstadoAsignacion.completada])
+        ).first()
+        if asignacion_existente:
+            return {"success": False, "error": "Incidente ya tiene asignación aceptada"}
+    
+    # Verificar si YA HAY una asignación aceptada para este incidente
+    asignacion_ya_aceptada = db.query(Asignacion).filter(
+        Asignacion.incidente_id == incidente_id,
+        Asignacion.estado == EstadoAsignacion.aceptada
+    ).first()
+    if asignacion_ya_aceptada:
+        return {"success": False, "error": "Este incidente ya tiene una asignación aceptada"}
     
     siguientes = obtener_siguiente_talleres(
         db, incidente.id, incidente.especialidad_ia, 10.0

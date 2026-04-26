@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -18,10 +18,9 @@ class NotificacionUpdate(BaseModel):
 
 
 class NotificacionResponse(NotificacionBase):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    
     id: int
     usuario_id: int
     fecha_envio: datetime
     leido: bool
-
-    class Config:
-        from_attributes = True

@@ -4,6 +4,9 @@ from typing import List
 import asyncio
 from pydantic import BaseModel
 from fastapi import UploadFile, File, Form
+from datetime import datetime
+from pathlib import Path
+from app.modulos.incidentes.services.cloudinary_service import cloudinary_service
 
 from app.db.database import get_db
 from app.modulos.incidentes.services import incidente as incidente_service
@@ -49,25 +52,20 @@ async def crear_incidente(
     crear_notificacion(db, NotificacionCreate(
         usuario_id=current_user.id,
         titulo="Emergencia creada",
-        mensaje=f"Tu incidente #{db_incidente.id} ha sido reportado. Te informaremos cuando sea analyzed.",
+        mensaje=f"Tu incidente #{db_incidente.id} ha sido reportado. Te informaremos cuando sea analizado.",
         tipo="incidente_creado"
     ))
     
-    await NotificacionService.notificar_incidente_creado(
-        db=db,
-        cliente_id=current_user.id,
-        incidente_id=db_incidente.id
-    )
-    
-    asyncio.create_task(
-        NotificacionService.notificar_incidente_cercano(
-            db=db,
-            incidente_id=db_incidente.id,
-            lat=db_incidente.ubicacion_lat,
-            lng=db_incidente.ubicacion_lng,
-            radio_km=10.0
-        )
-    )
+    # NO Buscar talleres aquí - se hará después del análisis de IA
+    # asyncio.create_task(
+    #     NotificacionService.notificar_incidente_cercano(
+    #         db=db,
+    #         incidente_id=db_incidente.id,
+    #         lat=db_incidente.ubicacion_lat,
+    #         lng=db_incidente.ubicacion_lng,
+    #         radio_km=10.0
+    #     )
+    # )
     
     return db_incidente
 
@@ -105,19 +103,31 @@ def obtener_incidentes_taller(
         raise HTTPException(status_code=403, detail="No tienes permiso para ver estos incidentes")
 
     asignaciones = db.query(asignacion_service.Asignacion).filter(
-        asignacion_service.Asignacion.taller_id == taller_id
+        asignacion_service.Asignacion.taller_id == taller_id,
+        asignacion_service.Asignacion.estado.in_([
+            asignacion_service.EstadoAsignacion.aceptada,
+            asignacion_service.EstadoAsignacion.completada
+        ])
     ).offset(skip).limit(limit).all()
-
-    incidente_ids = [a.incidente_id for a in asignaciones]
+    
+    incidente_ids = list(set([a.incidente_id for a in asignaciones]))
+    print(f"[DEBUG] Taller {taller_id} - Asignaciones: {len(asignaciones)}, IDs unicos: {incidente_ids}")
+    
+    if not incidente_ids:
+        print("[DEBUG] No hay incidente_ids, retornando lista vacía")
+        return []
 
     query = db.query(incidente_service.Incidente).filter(
         incidente_service.Incidente.id.in_(incidente_ids)
-    )
+    ).distinct()
 
     if estado:
         query = query.filter(incidente_service.Incidente.estado == estado)
 
-    return query.all()
+    incidentes = query.all()
+    print(f"[DEBUG] Incidentes encontrados: {len(incidentes)} - IDs: {[i.id for i in incidentes]}")
+    
+    return incidentes
 
 
 @router.get("/cercanos/{taller_id}", response_model=List[dict])
@@ -383,11 +393,29 @@ async def publicar_evidencia_incidente(
     if current_user.id != incidente.cliente_id:
         raise HTTPException(status_code=403, detail="No tienes permiso")
     
+    url_archivo = None
+    
+    if archivo and tipo in ["foto", "audio"]:
+        file_data = await archivo.read()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_extension = Path(archivo.filename).suffix if archivo.filename else ""
+        filename = f"{incidente_id}_{timestamp}{file_extension}"
+        
+        if tipo == "foto":
+            result = await cloudinary_service.upload_image(file_data, filename)
+        else:
+            result = await cloudinary_service.upload_audio(file_data, filename)
+        
+        if result.get("success"):
+            url_archivo = result["url"]
+        else:
+            raise HTTPException(status_code=500, detail=f"Error al subir archivo a Cloudinary: {result.get('error')}")
+    
     evidencia_data = EvidenciaCreate(
         incidente_id=incidente_id,
         tipo=tipo,
         contenido=contenido,
-        url_archivo=None,
+        url_archivo=url_archivo,
         transcripcion=None,
         descripcion=None
     )
@@ -510,6 +538,26 @@ async def analizar_incidente_con_ia(
     
     if analisis_result.get("requiere_mas_evidencia", 0) == 1:
         nuevo_estado = EstadoIncidente.reportado
+        
+        from app.modulos.usuarios.services.notificacion import crear_notificacion
+        from app.modulos.usuarios.schemas.notificacion import NotificacionCreate
+        
+        mensaje_solicitud = analisis_result.get("mensaje_solicitud") or "Necesitamos más información sobre tu incidente"
+        
+        crear_notificacion(db, NotificacionCreate(
+            usuario_id=incidente.cliente_id,
+            titulo="Información requerida",
+            mensaje=mensaje_solicitud,
+            tipo="requiere_mas_evidencia"
+        ))
+        
+        from app.core.websocket.manager import ws_manager
+        await ws_manager.send_to_cliente({
+            "type": "requiere_mas_evidencia",
+            "incidente_id": incidente_id,
+            "mensaje": mensaje_solicitud,
+            "mensaje_solicitud": mensaje_solicitud
+        }, incidente.cliente_id)
     else:
         nuevo_estado = None
     
@@ -545,7 +593,7 @@ async def analizar_incidente_con_ia(
             descripcion=analisis_result.get("descripcion", "")
         )
     
-    if nuevo_estado is None and analisis_result.get("especialidad_ia"):
+    if nuevo_estado is None and analisis_result.get("especialidad_ia") and analisis_result.get("requiere_mas_evidencia", 0) != 1:
         await NotificacionService.notificar_incidente_cercano(
             db=db,
             incidente_id=incidente_id,
@@ -647,14 +695,17 @@ def obtener_incidentes_asignados(
 
     asignaciones = db.query(asignacion_service.Asignacion).filter(
         asignacion_service.Asignacion.taller_id == taller_id,
-        asignacion_service.Asignacion.estado == EstadoAsignacion.aceptada
+        asignacion_service.Asignacion.estado.in_([
+            EstadoAsignacion.aceptada, 
+            EstadoAsignacion.completada
+        ])
     ).all()
-
+    
+    processed_ids = set()
     estados_vigidos = [EstadoIncidente.asignado, EstadoIncidente.en_camino, EstadoIncidente.en_sitio]
     
-    from datetime import datetime, timedelta
+    from datetime import datetime
     hoy = datetime.now().date()
-    inicio_dia = datetime.combine(hoy, datetime.min.time())
 
     incidentes_result = []
     total_hoy = 0
@@ -662,6 +713,10 @@ def obtener_incidentes_asignados(
     finalizados = 0
 
     for asignacion in asignaciones:
+        if asignacion.incidente_id in processed_ids:
+            continue
+        processed_ids.add(asignacion.incidente_id)
+        
         incidente = db.query(incidente_service.Incidente).filter(
             incidente_service.Incidente.id == asignacion.incidente_id
         ).first()
@@ -746,6 +801,60 @@ def obtener_incidentes_asignados(
     }
 
 
+@router.get("/taller/{taller_id}/estadisticas")
+def obtener_estadisticas_taller(
+    taller_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """Obtiene estadísticas del taller: total, pendientes, completadas"""
+    from app.modulos.activos.models.taller import Taller
+    from app.modulos.asignacion.model import Asignacion, EstadoAsignacion
+    
+    taller = db.query(Taller).filter(Taller.id == taller_id).first()
+    if not taller:
+        raise HTTPException(status_code=404, detail="Taller no encontrado")
+    if taller.dueño_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No tienes permiso")
+    
+    asignaciones = db.query(Asignacion).filter(
+        Asignacion.taller_id == taller_id,
+        Asignacion.estado.in_([EstadoAsignacion.aceptada, EstadoAsignacion.completada])
+    ).all()
+    
+    processed_ids = set()
+    total = 0
+    pendientes = 0
+    completadas = 0
+    
+    for asignacion in asignaciones:
+        if asignacion.incidente_id in processed_ids:
+            continue
+        processed_ids.add(asignacion.incidente_id)
+        
+        incidente = db.query(incidente_service.Incidente).filter(
+            incidente_service.Incidente.id == asignacion.incidente_id
+        ).first()
+        
+        if not incidente:
+            continue
+        
+        total += 1
+        
+        if incidente.estado in [EstadoIncidente.asignado, EstadoIncidente.en_camino, EstadoIncidente.en_sitio]:
+            pendientes += 1
+        elif incidente.estado == EstadoIncidente.finalizado:
+            completadas += 1
+    
+    print(f"[DEBUG] Estadisticas taller {taller_id}: total={total}, pendientes={pendientes}, completadas={completadas}")
+    
+    return {
+        "total": total,
+        "pendientes": pendientes,
+        "completadas": completadas
+    }
+
+
 @router.get("/{incidente_id}/detalle-asignado")
 def obtener_detalle_asignado(
     incidente_id: int,
@@ -774,9 +883,8 @@ def obtener_detalle_asignado(
 
     asignacion = db.query(asignacion_service.Asignacion).filter(
         asignacion_service.Asignacion.incidente_id == incidente_id,
-        asignacion_service.Asignacion.taller_id == taller.id,
-        asignacion_service.Asignacion.estado == EstadoAsignacion.aceptada
-    ).first()
+        asignacion_service.Asignacion.taller_id == taller.id
+    ).order_by(asignacion_service.Asignacion.fecha_asignacion.desc()).first()
 
     cliente = db.query(Usuario).filter(Usuario.id == incidente.cliente_id).first()
 
@@ -785,9 +893,7 @@ def obtener_detalle_asignado(
         from app.modulos.activos.models.vehiculo import Vehiculo
         vehiculo = db.query(Vehiculo).filter(Vehiculo.id == incidente.vehiculo_id).first()
 
-    evidencias = []
-    if asignacion:
-        evidencias = db.query(Evidencia).filter(Evidencia.incidente_id == incidente_id).all()
+    evidencias = db.query(Evidencia).filter(Evidencia.incidente_id == incidente_id).all()
     
     historial = historia_service.obtener_historia_incidente(db, incidente_id)
 

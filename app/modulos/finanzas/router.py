@@ -44,6 +44,29 @@ def crear_pago_desde_tecnico(
     
     if request.finalizar:
         db_incidente.estado = EstadoIncidente.finalizado
+        db.commit()
+        db.refresh(db_incidente)
+        
+        from app.modulos.asignacion import service as asignacion_service
+        from app.modulos.usuarios.services.notificacion import crear_notificacion
+        from app.modulos.usuarios.schemas.notificacion import NotificacionCreate
+        
+        asignacion = db.query(asignacion_service.Asignacion).filter(
+            asignacion_service.Asignacion.incidente_id == request.incidente_id
+        ).first()
+        if asignacion:
+            asignacion.estado = asignacion_service.EstadoAsignacion.completada
+            db.commit()
+        
+        db.add(crear_notificacion(
+            db, NotificacionCreate(
+                usuario_id=db_incidente.cliente_id,
+                titulo="Incidente resuelto",
+                mensaje=f"Tu incidente ha sido resuelto. Monto Bs {request.monto}. ¡Gracias por usar AUXIA!",
+                tipo="incidente_finalizado"
+            )
+        ))
+        db.commit()
     
     monto_comision = round(request.monto * 0.10, 2)
     

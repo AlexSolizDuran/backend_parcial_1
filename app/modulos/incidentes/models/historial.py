@@ -19,7 +19,5 @@ class HistoriaIncidente(Base):
     titulo = Column(String, nullable=False)
     descripcion = Column(Text, nullable=True)
     fecha_hora = Column(DateTime, default=now_bolivia)
-    titulo = Column(String, nullable=False)
-    descripcion = Column(Text, nullable=True)
 
     incidente = relationship("Incidente", back_populates="historia_incidentes")

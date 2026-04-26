@@ -25,7 +25,7 @@ def obtener_notificacion(db: Session, notificacion_id: int):
 def obtener_notificaciones_usuario(db: Session, usuario_id: int, skip: int = 0, limit: int = 100):
     return db.query(Notificacion).filter(
         Notificacion.usuario_id == usuario_id
-    ).offset(skip).limit(limit).all()
+    ).order_by(Notificacion.fecha_envio.desc()).offset(skip).limit(limit).all()
 
 
 def marcar_como_leido(db: Session, notificacion_id: int):

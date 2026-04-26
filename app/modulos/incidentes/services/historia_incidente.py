@@ -20,6 +20,7 @@ MAP_ESTADO_INCIDENTE_A_HISTORIA = {
     EstadoIncidente.finalizado: "completado",
     EstadoIncidente.cancelado: "cancelado",
     EstadoIncidente.incluido: "inconcluso",
+    EstadoIncidente.sin_talleres: "sin_taller",
 }
 
 
