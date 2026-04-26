@@ -14,7 +14,7 @@ def crear_usuario(db: Session, usuario: UsuarioCreate):
     ).first()
     if db_usuario:
         return None
-
+    
     hashed_password = get_password_hash(usuario.password)
     db_usuario = Usuario(
         email=usuario.email,
@@ -24,6 +24,7 @@ def crear_usuario(db: Session, usuario: UsuarioCreate):
         telefono=usuario.telefono,
         rol=usuario.rol.value
     )
+    
     db.add(db_usuario)
     db.commit()
     db.refresh(db_usuario)

@@ -103,7 +103,7 @@ async def subir_evidencia(
 
 
 @router.get("/incidente/{incidente_id}", response_model=List[EvidenciaResponse])
-def obtener_evidencias_incidente(
+def obtener_evidencias_por_incidente(
     incidente_id: int,
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)

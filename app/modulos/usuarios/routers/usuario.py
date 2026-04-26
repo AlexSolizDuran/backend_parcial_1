@@ -71,6 +71,7 @@ def get_current_user_with_taller(token: str = Depends(oauth2_scheme), db: Sessio
 
 @router.post("/register", response_model=UsuarioResponse)
 def register(usuario: UsuarioCreate, db: Session = Depends(get_db)):
+    print(usuario)
     db_usuario = usuario_service.crear_usuario(db, usuario)
     if not db_usuario:
         raise HTTPException(status_code=400, detail="Email o username ya registrado")

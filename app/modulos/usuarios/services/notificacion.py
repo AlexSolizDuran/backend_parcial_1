@@ -11,6 +11,7 @@ def crear_notificacion(db: Session, notificacion: NotificacionCreate):
         mensaje=notificacion.mensaje,
         tipo=notificacion.tipo
     )
+    
     db.add(db_notificacion)
     db.commit()
     db.refresh(db_notificacion)
