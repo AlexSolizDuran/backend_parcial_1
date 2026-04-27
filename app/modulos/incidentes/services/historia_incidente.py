@@ -31,7 +31,8 @@ def crear_incidente(db: Session, incidente) -> Incidente:
         vehiculo_id=incidente.vehiculo_id,
         ubicacion_lat=incidente.ubicacion_lat,
         ubicacion_lng=incidente.ubicacion_lng,
-        descripcion_original=incidente.descripcion_original
+        descripcion_original=incidente.descripcion_original,
+        estado=EstadoIncidente.reportado
     )
     db.add(db_incidente)
     db.commit()

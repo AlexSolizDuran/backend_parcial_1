@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.modulos.finanzas.model import Pago
 from app.modulos.finanzas.schema import PagoCreate, PagoUpdate
+from app.modulos.asignacion.model import Asignacion
 
 
 def crear_pago(db: Session, pago: PagoCreate) -> Pago:
@@ -47,6 +48,13 @@ def actualizar_pago(db: Session, pago_id: int, pago_update: PagoUpdate) -> Optio
     db.commit()
     db.refresh(db_pago)
     return db_pago
+
+
+def obtener_pagos_por_taller(db: Session, taller_id: int) -> List[Pago]:
+    """Obtiene todos los pagos asociados a un taller a través de sus asignaciones"""
+    return db.query(Pago).join(Asignacion, Pago.asignacion_id == Asignacion.id).filter(
+        Asignacion.taller_id == taller_id
+    ).all()
 
 
 def eliminar_pago(db: Session, pago_id: int) -> bool:

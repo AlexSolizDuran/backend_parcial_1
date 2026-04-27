@@ -41,7 +41,7 @@ class Incidente(Base):
     especialidad_ia = Column(String, nullable=True)
     descripcion_ia = Column(Text, nullable=True)
     prioridad = Column(SQLEnum(PrioridadIncidente), default=PrioridadIncidente.media)
-    estado = Column(SQLEnum(EstadoIncidente), nullable=True, default=EstadoIncidente.reportado)
+    estado = Column(SQLEnum(EstadoIncidente), nullable=False, default=EstadoIncidente.reportado)
     descripcion_original = Column(Text, nullable=True)
     descripcion = Column(Text, nullable=True)
     requiere_mas_evidencia = Column(Integer, default=0)

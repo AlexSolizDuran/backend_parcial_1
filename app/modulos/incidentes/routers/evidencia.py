@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -9,6 +12,7 @@ from app.db.database import get_db
 from app.modulos.incidentes.services import evidencia as evidencia_service
 from app.modulos.incidentes.services import incidente as incidente_service
 from app.modulos.incidentes.services.cloudinary_service import cloudinary_service
+from app.modulos.incidentes.services.analisis_incidente import analisis_service
 from app.modulos.incidentes.schemas.evidencia import EvidenciaCreate, EvidenciaUpdate, EvidenciaResponse
 from app.modulos.usuarios.models.usuario import Usuario
 from app.core.security import get_current_user
@@ -98,6 +102,20 @@ async def subir_evidencia(
     )
     
     evidencia = evidencia_service.crear_evidencia(db, evidencia_create)
+    
+    # Transcribir audio automáticamente al subir
+    if tipo == "audio" and evidencia.url_archivo:
+        try:
+            resultado = await analisis_service.analizar_evidencia(evidencia)
+            if resultado.get("descripcion"):
+                evidencia.descripcion = resultado["descripcion"]
+            if resultado.get("transcripcion"):
+                evidencia.transcripcion = resultado["transcripcion"]
+            db.add(evidencia)
+            db.commit()
+            db.refresh(evidencia)
+        except Exception as e:
+            logger.error(f"Failed to auto-transcribe audio: {e}")
     
     return evidencia
 

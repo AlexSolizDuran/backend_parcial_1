@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
 
 from app.db.database import get_db
 from app.modulos.finanzas import service as pago_service
@@ -10,6 +11,8 @@ from app.modulos.finanzas.pasarela import pasarela_pago
 from app.modulos.usuarios.models.usuario import Usuario
 from app.core.security import get_current_user
 from app.modulos.incidentes.models.incidente import Incidente, EstadoIncidente
+from app.modulos.finanzas.pdf_service import PagoPDFService
+from app.modulos.activos.models.taller import Taller
 
 router = APIRouter(prefix="/pagos", tags=["pagos"])
 
@@ -265,3 +268,63 @@ def eliminar_pago(
             detail="Pago no encontrado"
         )
     return None
+
+
+@router.get("/taller/{taller_id}/pagos/pdf", response_class=StreamingResponse)
+def generar_pdf_pagos_taller(
+    taller_id: int,
+    fecha_desde: Optional[str] = None,
+    fecha_hasta: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user)
+):
+    """
+    Genera un PDF con el reporte de pagos de un taller específico
+    """
+    # Verificar que el usuario sea dueño del taller
+    taller = db.query(Taller).filter(Taller.id == taller_id).first()
+    if not taller:
+        raise HTTPException(status_code=404, detail="Taller no encontrado")
+    
+    if taller.dueño_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No tienes permiso para acceder a este taller")
+    
+    # Parsear fechas si se proporcionan
+    fecha_desde_dt = None
+    fecha_hasta_dt = None
+    
+    if fecha_desde:
+        try:
+            fecha_desde_dt = datetime.strptime(fecha_desde, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de fecha_desde inválido. Use YYYY-MM-DD")
+    
+    if fecha_hasta:
+        try:
+            fecha_hasta_dt = datetime.strptime(fecha_hasta, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de fecha_hasta inválido. Use YYYY-MM-DD")
+    
+    # Generar el PDF
+    try:
+        pdf_buffer = PagoPDFService.generar_reporte_pagos_taller(
+            db_session=db,
+            taller_id=taller_id,
+            fecha_desde=fecha_desde_dt,
+            fecha_hasta=fecha_hasta_dt
+        )
+        
+        # Preparar respuesta
+        pdf_buffer.seek(0)
+        
+        # Nombre del archivo
+        fecha_actual = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"reporte_pagos_taller_{taller_id}_{fecha_actual}.pdf"
+        
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al generar PDF: {str(e)}")

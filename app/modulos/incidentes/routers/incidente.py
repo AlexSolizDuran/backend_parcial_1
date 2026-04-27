@@ -559,7 +559,7 @@ async def analizar_incidente_con_ia(
             "mensaje_solicitud": mensaje_solicitud
         }, incidente.cliente_id)
     else:
-        nuevo_estado = None
+        nuevo_estado = EstadoIncidente.reportado
     
     incidente_update = IncidenteUpdate(
         especialidad_ia=analisis_result["especialidad_ia"],
@@ -593,7 +593,7 @@ async def analizar_incidente_con_ia(
             descripcion=analisis_result.get("descripcion", "")
         )
     
-    if nuevo_estado is None and analisis_result.get("especialidad_ia") and analisis_result.get("requiere_mas_evidencia", 0) != 1:
+    if analisis_result.get("especialidad_ia") and analisis_result.get("especialidad_ia") != "desconocido" and analisis_result.get("requiere_mas_evidencia", 0) != 1:
         await NotificacionService.notificar_incidente_cercano(
             db=db,
             incidente_id=incidente_id,

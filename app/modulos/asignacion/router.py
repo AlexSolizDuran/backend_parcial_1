@@ -279,13 +279,45 @@ async def aceptar_asignacion_incidente(
     incidente = db.query(Incidente).filter(Incidente.id == asignacion.incidente_id).first()
      
     asignacion_aceptada = asignacion_service.aceptar_asignacion(db, asignacion_id, tecnico_id)
-     
+    
     if asignacion_aceptada is None:
         raise HTTPException(
             status_code=409, 
             detail="Este incidente ya tiene una asignación aceptada. No se puede aceptar otra."
         )
-     
+    
+    # Notificar al cliente y al técnico que la asignación ha sido aceptada
+    if incidente:
+        from app.modulos.incidentes.services.notificacion import NotificacionService
+        from app.modulos.usuarios.services.notificacion import crear_notificacion
+        from app.modulos.usuarios.schemas.notificacion import NotificacionCreate
+        
+        # Notificar al cliente
+        await NotificacionService.notificar_cliente_asignado(
+            db=db,
+            cliente_id=incidente.cliente_id,
+            incidente_id=incidente.id,
+            taller_id=taller.id
+        )
+        
+        # Notificar al técnico (si se proporcionó)
+        if tecnico_id:
+            await NotificacionService.notificar_tecnico_por_user_id(
+                db=db,
+                tecnico_user_id=tecnico_id,
+                incidente_id=incidente.id,
+                mensaje=f"Se te ha asignado el incidente #{incidente.id}"
+            )
+        
+        # Crear notificación interna en la base de datos para el cliente
+        crear_notificacion(db, NotificacionCreate(
+            usuario_id=incidente.cliente_id,
+            titulo="Taller aceptado",
+            mensaje=f"El taller {taller.nombre} ha aceptado tu incidente. Te atenderán pronto.",
+            tipo="incidente_asignado"
+        ))
+        db.commit()
+    
     # La función ya canceló las demás asignaciones pendientes, no es necesario hacerlo de nuevo
     
     if incidente:
@@ -348,14 +380,14 @@ def aceptar_y_asignar_tecnico(
     db: Session = Depends(get_db),
     current_user: Usuario = Depends(get_current_user)
 ):
-    
-    """Acepta un incidente y asigna un técnico -> crea asignación aceptada"""
+    """Acepta un incidente y asigna un técnico actualizando la asignación pendiente"""
     from app.modulos.activos.models.taller import Taller
     from app.modulos.usuarios.models.tecnico import Tecnico
     from app.modulos.incidentes.models.incidente import EstadoIncidente
     from app.modulos.usuarios.services.notificacion import crear_notificacion
     from app.modulos.usuarios.schemas.notificacion import NotificacionCreate
     from app.modulos.incidentes.services import historia_incidente as historia_service
+    from app.modulos.asignacion.model import EstadoAsignacion
 
     if current_user.rol.value != "dueno":
         raise HTTPException(status_code=403, detail="Solo dueños pueden aceptar incidentes")
@@ -373,30 +405,35 @@ def aceptar_y_asignar_tecnico(
     if not incidente:
         raise HTTPException(status_code=404, detail="Incidente no encontrado")
 
-    # Verificar si ya existe una asignación con técnico vinculado
-    asignacion_con_tecnico = db.query(asignacion_service.Asignacion).filter(
-        asignacion_service.Asignacion.incidente_id == data.incidente_id,
-        asignacion_service.Asignacion.tecnico_id.isnot(None)
-    ).first()
-    
-    if asignacion_con_tecnico:
-        raise HTTPException(status_code=400, detail="El incidente ya fue asignado")
-
-    existente = db.query(asignacion_service.Asignacion).filter(
+    # 1. BUSCAR LA ASIGNACIÓN PENDIENTE ORIGINAL
+    asignacion_pendiente = db.query(asignacion_service.Asignacion).filter(
         asignacion_service.Asignacion.incidente_id == data.incidente_id,
         asignacion_service.Asignacion.taller_id == taller.id,
-        asignacion_service.Asignacion.estado == EstadoAsignacion.aceptada
+        asignacion_service.Asignacion.estado == EstadoAsignacion.pendiente
     ).first()
-    if existente:
-        raise HTTPException(status_code=400, detail="Ya tienes una asignación aceptada para este incidente")
 
-    asignacion = asignacion_service.crear_asignacion_aceptada(
-        db, data.incidente_id, taller.id, data.tecnico_id
-    )
+    if not asignacion_pendiente:
+        raise HTTPException(status_code=400, detail="No hay una asignación pendiente para aceptar o ya fue aceptada.")
+
+    # 2. ACTUALIZAR LA ASIGNACIÓN (NO CREAR UNA NUEVA)
+    asignacion_pendiente.estado = EstadoAsignacion.aceptada
+    asignacion_pendiente.tecnico_id = data.tecnico_id
+    from app.modulos.asignacion.model import now_bolivia
+    asignacion_pendiente.fecha_aceptacion = now_bolivia()
+    
+    # 3. CANCELAR OTRAS ASIGNACIONES PENDIENTES (Si el sistema le avisó a múltiples talleres)
+    otras_pendientes = db.query(asignacion_service.Asignacion).filter(
+        asignacion_service.Asignacion.incidente_id == data.incidente_id,
+        asignacion_service.Asignacion.estado == EstadoAsignacion.pendiente,
+        asignacion_service.Asignacion.id != asignacion_pendiente.id
+    ).all()
+    for otra in otras_pendientes:
+        otra.estado = EstadoAsignacion.cancelada
 
     incidente.estado = EstadoIncidente.asignado
     db.commit()
 
+    # --- El resto del código de notificaciones se mantiene igual ---
     from app.modulos.incidentes.schemas.historia_incidente import HistoriaIncidenteCreate
     historia = HistoriaIncidenteCreate(
         titulo="Incidente asignado",
@@ -427,15 +464,13 @@ def aceptar_y_asignar_tecnico(
         )
     ))
     
-    print("Estado incidente:", incidente.estado)
-    print("Permitidos:", EstadoIncidente.reportado, EstadoIncidente.sin_talleres)
     db.commit()
 
     return {
-        "asignacion_id": asignacion.id,
+        "asignacion_id": asignacion_pendiente.id,
         "estado": "aceptada",
-        "incidente_id": asignacion.incidente_id,
-        "taller_id": asignacion.taller_id
+        "incidente_id": asignacion_pendiente.incidente_id,
+        "taller_id": asignacion_pendiente.taller_id
     }
 
 
