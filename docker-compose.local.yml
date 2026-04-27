@@ -1,0 +1,17 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./app.db
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    volumes:
+      # Montamos todo el proyecto en /src
+      - .:/src:Z 
+    # Le decimos que trabaje desde /src
+    working_dir: /src
+    # Ahora sí: busca el paquete app, módulo main, objeto app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

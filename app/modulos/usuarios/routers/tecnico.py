@@ -55,6 +55,22 @@ def registrar_tecnico(current_user: Usuario = Depends(get_current_user), db: Ses
     return db_tecnico
 
 
+def _obtener_historial_incidente(incidente_id: int, db: Session) -> list:
+    """Obtiene el historial de un incidente"""
+    from app.modulos.incidentes.models.historial import HistoriaIncidente
+    historial = db.query(HistoriaIncidente).filter(
+        HistoriaIncidente.incidente_id == incidente_id
+    ).order_by(HistoriaIncidente.fecha_hora.asc()).all()
+    return [
+        {
+            "id": h.id,
+            "titulo": h.titulo,
+            "descripcion": h.descripcion,
+            "fecha_hora": h.fecha_hora.isoformat() if h.fecha_hora else None
+        } for h in historial
+    ]
+
+
 @router.get("/mi-incidente", response_model=dict)
 def get_mi_incidente(
     db: Session = Depends(get_db),
@@ -194,7 +210,8 @@ def get_mi_incidente(
                     "transcripcion": ev.transcripcion,
                     "descripcion": ev.descripcion,
                 } for ev in incidente.evidencias
-            ] if incidente.evidencias else []
+            ] if incidente.evidencias else [],
+            "historial": _obtener_historial_incidente(incidente.id, db)
         }
     }
 
