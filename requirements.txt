@@ -13,3 +13,4 @@ httpx>=0.25.0
 cloudinary>=1.40.0
 apscheduler
 reportlab>=4.0.0
+firebase-admin>=6.0.0

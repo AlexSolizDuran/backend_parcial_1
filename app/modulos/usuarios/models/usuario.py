@@ -21,6 +21,7 @@ class Usuario(Base):
     nombre = Column(String, nullable=False)
     telefono = Column(String)
     rol = Column(SQLEnum(RolEnum), default=RolEnum.cliente)
+    fcm_token = Column(String, nullable=True)
 
     vehiculos = relationship("Vehiculo", back_populates="cliente")
     notificaciones = relationship("Notificacion", back_populates="usuario")

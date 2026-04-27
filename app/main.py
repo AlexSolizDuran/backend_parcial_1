@@ -39,6 +39,25 @@ def inicializar_datos():
     finally:
         db.close()
 
+def iniciar_firebase():
+    """Inicializa Firebase para notificaciones push"""
+    try:
+        from app.modulos.incidentes.services.firebase_service import init_firebase
+        # Intentar inicializar con credenciales por defecto
+        import os
+        cred_path = os.path.join(os.path.dirname(__file__), "firebase-credentials.json")
+        if os.path.exists(cred_path):
+            init_firebase(cred_path)
+        else:
+            # Intentar con la ruta del proyecto
+            cred_path_project = os.path.join(os.path.dirname(os.path.dirname(__file__)), "firebase-credentials.json")
+            if os.path.exists(cred_path_project):
+                init_firebase(cred_path_project)
+            else:
+                logging.warning("Archivo de credenciales Firebase no encontrado. Las notificaciones push no funcionarán.")
+    except Exception as e:
+        logging.warning(f"Error al inicializar Firebase: {e}. Las notificaciones push no funcionarán.")
+
 def iniciar_scheduler():
     scheduler.add_job(
         verificar_expiradas_job,
@@ -130,6 +149,7 @@ async def websocket_route(websocket: WebSocket):
 @app.on_event("startup")
 async def startup_event():
     iniciar_scheduler()
+    iniciar_firebase()
 
 @app.on_event("shutdown")
 async def shutdown_event():

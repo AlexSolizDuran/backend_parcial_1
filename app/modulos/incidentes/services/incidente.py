@@ -113,10 +113,51 @@ def obtener_estadisticas_incidente(db: Session, incidente_id: int) -> dict:
     historia = obtener_historia_incidente(db, incidente_id)
     asignaciones = asignacion_service.obtener_asignaciones_por_incidente(db, incidente_id)
     
+    # Formatear evidencias como diccionarios para asegurar serialization correcta
+    evidencias_formateadas = []
+    for e in evidencias:
+        evidencias_formateadas.append({
+            "id": e.id,
+            "incidente_id": e.incidente_id,
+            "tipo": e.tipo,
+            "url_archivo": e.url_archivo,
+            "contenido": e.contenido,
+            "transcripcion": e.transcripcion,
+            "descripcion": e.descripcion,
+            "fecha_subida": e.fecha_subida.isoformat() if e.fecha_subida else None
+        })
+    
+    # Formatear historial
+    historial_formateado = []
+    for h in historia:
+        historial_formateado.append({
+            "id": h.id,
+            "incidente_id": h.incidente_id,
+            "titulo": h.titulo,
+            "descripcion": h.descripcion,
+            "fecha_hora": h.fecha_hora.isoformat() if h.fecha_hora else None
+        })
+    
     return {
-        "incidente": incidente,
-        "evidencias": evidencias,
-        "historial": historia,
+        "incidente": {
+            "id": incidente.id,
+            "cliente_id": incidente.cliente_id,
+            "vehiculo_id": incidente.vehiculo_id,
+            "especialidad_ia": incidente.especialidad_ia,
+            "descripcion_ia": incidente.descripcion_ia,
+            "prioridad": incidente.prioridad.value if incidente.prioridad else None,
+            "estado": incidente.estado.value if incidente.estado else None,
+            "descripcion_original": incidente.descripcion_original,
+            "descripcion": incidente.descripcion,
+            "requiere_mas_evidencia": incidente.requiere_mas_evidencia,
+            "mensaje_solicitud": incidente.mensaje_solicitud,
+            "ubicacion_lat": incidente.ubicacion_lat,
+            "ubicacion_lng": incidente.ubicacion_lng,
+            "fecha_creacion": incidente.fecha_creacion.isoformat() if incidente.fecha_creacion else None,
+            "fecha_actualizacion": incidente.fecha_actualizacion.isoformat() if incidente.fecha_actualizacion else None,
+        },
+        "evidencias": evidencias_formateadas,
+        "historial": historial_formateado,
         "asignaciones": asignaciones,
         "total_evidencias": len(evidencias),
         "tiene_foto": any(e.tipo == "foto" for e in evidencias),

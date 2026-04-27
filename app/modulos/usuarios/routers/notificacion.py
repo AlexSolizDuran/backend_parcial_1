@@ -49,3 +49,15 @@ def delete_notificacion(notificacion_id: int, db: Session = Depends(get_db)):
     if not db_notificacion:
         raise HTTPException(status_code=404, detail="Notificacion no encontrada")
     return {"message": "Notificacion eliminada"}
+
+
+@router.put("/fcm-token")
+def actualizar_fcm_token(
+    fcm_token: str,
+    current_user: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Actualiza el token FCM del usuario para recibir notificaciones push"""
+    current_user.fcm_token = fcm_token
+    db.commit()
+    return {"success": True, "message": "Token FCM actualizado"}

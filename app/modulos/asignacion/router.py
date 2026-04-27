@@ -464,6 +464,41 @@ def aceptar_y_asignar_tecnico(
         )
     ))
     
+    # Enviar notificación push al técnico
+    try:
+        from app.modulos.incidentes.services.firebase_service import send_push_notification
+        tecnico_usuario = db.query(UsuarioModel).filter(UsuarioModel.id == tecnico.usuario_id).first()
+        if tecnico_usuario and tecnico_usuario.fcm_token:
+            send_push_notification(
+                token_fcm=tecnico_usuario.fcm_token,
+                titulo="Nuevo incidente asignado",
+                mensaje=f"Se te ha asignado el incidente #{incidente.id}. Cliente: {cliente.nombre if cliente else ''}",
+                data={
+                    "incidente_id": str(incidente.id),
+                    "tipo": "incidente_asignado"
+                }
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error al enviar push al técnico: {e}")
+    
+    # Enviar notificación push al cliente
+    try:
+        cliente_usuario = db.query(UsuarioModel).filter(UsuarioModel.id == incidente.cliente_id).first()
+        if cliente_usuario and cliente_usuario.fcm_token:
+            send_push_notification(
+                token_fcm=cliente_usuario.fcm_token,
+                titulo="Técnico asignado",
+                mensaje=f"El taller {taller.nombre} ha asignado un técnico a tu incidente #{incidente.id}",
+                data={
+                    "incidente_id": str(incidente.id),
+                    "tipo": "incidente_asignado"
+                }
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error al enviar push al cliente: {e}")
+    
     db.commit()
 
     return {
