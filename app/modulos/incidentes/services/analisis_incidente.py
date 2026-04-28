@@ -160,6 +160,7 @@ class AnalisisIncidenteService:
 Evidencias del incidente:
 {texto_combinado}
 
+Asegurate de responder en Español
 Responde en formato JSON exactamente así:
 {{
   "especialidad_ia": "especialidad seleccionada",

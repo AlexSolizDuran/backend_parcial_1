@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 BOLIVIA_TZ = timezone(timedelta(hours=-4))
 
 def now_bolivia():
-    # Obtiene la hora UTC actual y le resta 4 horas.
-    # Devuelve un datetime "naive" (sin tzinfo) para evitar que la BD lo convierta a UTC.
-    from datetime import datetime, timedelta, timezone
-    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=4)
+    # 1. datetime.utcnow() toma la hora del servidor en Render (que es UTC)
+    # 2. Le restamos 4 horas fijas (hardcodeado)
+    # 3. Devuelve un datetime "limpio" sin zona horaria, así la BD guarda exactamente esos números.
+    return datetime.utcnow() - timedelta(hours=4)
 
 
 def _notify_async(coro):

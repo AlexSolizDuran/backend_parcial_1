@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 
 class PagoBase(BaseModel):
@@ -21,6 +22,7 @@ class PagoUpdate(BaseModel):
 class PagoResponse(PagoBase):
     id: int
     estado: bool
+    fecha_creacion: datetime
 
     class Config:
         from_attributes = True
